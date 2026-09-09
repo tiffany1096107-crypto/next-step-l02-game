@@ -2,6 +2,14 @@
 
 目前網站在沒有 Firebase 設定時會維持裝置內紀錄；填入正式設定後，學生完成遊戲時會以匿名登入身分把紀錄送到 Firestore。
 
+## 已建立的專案
+
+- Firebase Project ID：`next-step-l02-game-tw`
+- Web App：`Next Step L02 Web`
+- 區域規劃：臺灣使用情境，Firestore 預定使用 `asia-east1`
+- 本機 Web 設定已存入被 Git 忽略的 `.env.local`，GitHub 中只有空白範本。
+- Firestore 規則尚未部署，正式收集資料前需由教師確認下列權限與資料欄位。
+
 ## 已準備的安全措施
 
 - 學生端只保存學生代碼，不應輸入姓名、電話或其他個資。
@@ -13,13 +21,11 @@
 
 ## 正式啟用順序
 
-1. 建立這個遊戲專用的 Firebase 專案，不沿用其他課程資料庫。
-2. 建立 Web App，將 `.env.example` 複製為 `.env.local`，填入 Firebase Web 設定。
-3. 在 Authentication 啟用「匿名」；教師登入方式另行確認後再啟用。
-4. 建立 Firestore，部署 `firestore.rules` 與 `firestore.indexes.json`。
-5. 由 Firebase Console 或受保護的管理程序建立 `teachers/{教師 UID}`；不可由公開網頁建立。
-6. 重新建置與部署，使用無痕視窗驗證：學生可送出，但不能讀取紀錄；教師帳號才可查看。
-7. 設定資料保存期限及刪除流程，再正式讓學生使用。
+1. 教師確認資料欄位與 `firestore.rules` 權限。
+2. 部署 Authentication 匿名登入、Firestore 規則與索引。
+3. 由 Firebase Console 或受保護的管理程序建立 `teachers/{教師 UID}`；不可由公開網頁建立。
+4. 重新建置與部署，使用無痕視窗驗證：學生可送出，但不能讀取紀錄；教師帳號才可查看。
+5. 設定資料保存期限及刪除流程，再正式讓學生使用。
 
 ## GitHub 自動部署預留
 
@@ -30,4 +36,3 @@
 - 六個 `NEXT_PUBLIC_FIREBASE_*` Repository secrets
 
 服務帳戶 JSON 只能放在 GitHub Secret，不可下載到專案資料夾或提交版本控制。
-
