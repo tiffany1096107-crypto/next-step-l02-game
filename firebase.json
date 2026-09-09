@@ -9,6 +9,7 @@
     "indexes": "firestore.indexes.json"
   },
   "hosting": {
+    "site": "next-step-l02-game-tw",
     "public": "dist/client",
     "ignore": [
       "firebase.json",

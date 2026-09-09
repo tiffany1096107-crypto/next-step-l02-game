@@ -6,6 +6,8 @@
 
 - Firebase Project ID：`next-step-l02-game-tw`
 - Web App：`Next Step L02 Web`
+- Firebase Hosting：https://next-step-l02-game-tw.web.app
+- Authentication：匿名登入已啟用
 - 區域規劃：臺灣使用情境，Firestore 預定使用 `asia-east1`
 - 本機 Web 設定已存入被 Git 忽略的 `.env.local`，GitHub 中只有空白範本。
 - Firestore 規則尚未部署，正式收集資料前需由教師確認下列權限與資料欄位。
@@ -22,7 +24,7 @@
 ## 正式啟用順序
 
 1. 教師確認資料欄位與 `firestore.rules` 權限。
-2. 部署 Authentication 匿名登入、Firestore 規則與索引。
+2. 部署 Firestore 規則與索引；匿名登入已先完成。
 3. 由 Firebase Console 或受保護的管理程序建立 `teachers/{教師 UID}`；不可由公開網頁建立。
 4. 重新建置與部署，使用無痕視窗驗證：學生可送出，但不能讀取紀錄；教師帳號才可查看。
 5. 設定資料保存期限及刪除流程，再正式讓學生使用。

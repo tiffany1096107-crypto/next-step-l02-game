@@ -3,6 +3,7 @@
 L2〈無心的錯誤〉三輪對話選擇遊戲公開測試版。
 
 - 公開遊戲：https://next-step-l02-game.spetiffany.chatgpt.site
+- Firebase Hosting：https://next-step-l02-game-tw.web.app
 - GitHub：https://github.com/tiffany1096107-crypto/next-step-l02-game
 
 ## 本機預覽
@@ -28,6 +29,6 @@ npm run dev
 
 ## 資料與 Firebase 狀態
 
-目前紀錄與教師設定仍會保存在同一個瀏覽器，並包含兩筆清楚標示的示範資料。已建立本遊戲專用 Firebase 專案 `next-step-l02-game-tw`、Web App、選用連線、安全規則、環境變數範本與手動部署流程。
+目前紀錄與教師設定仍會保存在同一個瀏覽器，並包含兩筆清楚標示的示範資料。已建立本遊戲專用 Firebase 專案 `next-step-l02-game-tw`、Web App、匿名登入、Firebase Hosting、選用連線、安全規則、環境變數範本與手動部署流程。
 
 Firestore 規則尚未部署；依 Firebase 工作流程，需由教師確認資料欄位及權限後再啟用正式收集。教師登入、跨裝置後台、資料保存期限與刪除方式也須在正式使用前確認。詳細步驟見 `FIREBASE_SETUP.md`。
