@@ -1,0 +1,66 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isTeacher() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/teachers/$(request.auth.uid));
+    }
+
+    function validMetrics(metrics) {
+      return metrics is map &&
+        metrics.keys().hasOnly(['think', 'safe', 'responsibility']) &&
+        metrics.think is int && metrics.think >= 0 && metrics.think <= 100 &&
+        metrics.safe is int && metrics.safe >= 0 && metrics.safe <= 100 &&
+        metrics.responsibility is int &&
+        metrics.responsibility >= 0 && metrics.responsibility <= 100;
+    }
+
+    function validGameRecord() {
+      return request.resource.data.keys().hasOnly([
+          'id', 'studentCode', 'completedAt', 'scenarioOrder', 'responses',
+          'finalMetrics', 'resultTitle', 'submittedBy', 'schemaVersion', 'createdAt'
+        ]) &&
+        request.resource.data.id is string &&
+        request.resource.data.id.size() <= 40 &&
+        request.resource.data.studentCode is string &&
+        request.resource.data.studentCode.size() >= 1 &&
+        request.resource.data.studentCode.size() <= 20 &&
+        request.resource.data.completedAt is string &&
+        request.resource.data.scenarioOrder is list &&
+        request.resource.data.scenarioOrder.size() == 3 &&
+        request.resource.data.responses is list &&
+        request.resource.data.responses.size() == 3 &&
+        validMetrics(request.resource.data.finalMetrics) &&
+        request.resource.data.resultTitle is string &&
+        request.resource.data.resultTitle.size() <= 20 &&
+        request.resource.data.submittedBy == request.auth.uid &&
+        request.resource.data.schemaVersion == 1;
+    }
+
+    match /gameRecords/{recordId} {
+      allow create: if signedIn() && recordId == request.resource.data.id && validGameRecord();
+      allow read, delete: if isTeacher();
+      allow update: if false;
+    }
+
+    match /publicSettings/{documentId} {
+      allow read: if signedIn();
+      allow write: if isTeacher();
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if signedIn() && request.auth.uid == teacherId;
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
