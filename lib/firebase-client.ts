@@ -196,8 +196,9 @@ export async function syncGameRecordToFirebase(record: CloudGameRecord) {
     const { auth, db } = getServices();
     if (!auth.currentUser) await signInAnonymously(auth);
     if (!auth.currentUser) return { status: 'failed' as const };
+    const serializableRecord = JSON.parse(JSON.stringify(record)) as CloudGameRecord;
     await setDoc(doc(db, 'gameRecords', record.id), {
-      ...record, submittedBy: auth.currentUser.uid, schemaVersion: 1, createdAt: serverTimestamp(),
+      ...serializableRecord, submittedBy: auth.currentUser.uid, schemaVersion: 1, createdAt: serverTimestamp(),
     });
     return { status: 'synced' as const };
   } catch {

@@ -147,6 +147,7 @@ export function GameApp() {
   const [teacherRequests, setTeacherRequests] = useState<TeacherRequest[]>([]);
   const [selectedRequestIds, setSelectedRequestIds] = useState<string[]>([]);
   const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'failed'>('idle');
 
   useEffect(() => {
     try {
@@ -184,12 +185,6 @@ export function GameApp() {
           setEnabledIds(settings.enabledIds);
           setRequiredId(settings.requiredId);
         }
-        if (session.status === 'admin' || session.status === 'teacher') {
-          setDashboardLoading(true);
-          const loadedRecords = await loadCloudGameRecords();
-          setCloudRecords(loadedRecords as GameRecord[]);
-          if (session.status === 'admin') setTeacherRequests(await loadTeacherRequests());
-        }
       } catch {
         setAuthMessage('目前無法讀取教師權限，請稍後再試。');
       } finally {
@@ -198,6 +193,25 @@ export function GameApp() {
       }
     })();
   }), []);
+
+  useEffect(() => {
+    if (view !== 'teacher' || (teacherSession?.status !== 'admin' && teacherSession?.status !== 'teacher')) return;
+    let active = true;
+    setDashboardLoading(true);
+    void (async () => {
+      try {
+        const loadedRecords = await loadCloudGameRecords();
+        if (!active) return;
+        setCloudRecords(loadedRecords as GameRecord[]);
+        if (teacherSession.status === 'admin') setTeacherRequests(await loadTeacherRequests());
+      } catch {
+        if (active) setAuthMessage('雲端紀錄讀取失敗，請稍後重新進入教師端。');
+      } finally {
+        if (active) setDashboardLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [view, teacherSession?.status]);
 
   const startGame = (code = studentCode || '訪客') => {
     const pool = SCENARIOS.filter((scenario) => enabledIds.includes(scenario.id));
@@ -208,7 +222,7 @@ export function GameApp() {
     const ordered = shuffle(picked);
     setStudentCode(code.trim() || '訪客');
     setRounds(ordered); setRoundIndex(0); setChoices(shuffle(ordered[0].choices));
-    setMetrics(INITIAL_METRICS); setResponses([]); setSelected(null); setView('game');
+    setMetrics(INITIAL_METRICS); setResponses([]); setSelected(null); setSyncStatus('idle'); setView('game');
   };
 
   useEffect(() => {
@@ -258,7 +272,13 @@ export function GameApp() {
       responses, finalMetrics: metrics, resultTitle: result.title,
     };
     setRecords((current) => [record, ...current]);
-    void syncGameRecordToFirebase(record);
+    setSyncStatus('syncing');
+    void syncGameRecordToFirebase(record).then((result) => {
+      setSyncStatus(result.status === 'synced' ? 'synced' : 'failed');
+      if (result.status === 'synced' && (teacherSession?.status === 'admin' || teacherSession?.status === 'teacher')) {
+        void loadCloudGameRecords().then((loaded) => setCloudRecords(loaded as GameRecord[]));
+      }
+    });
     setView('result'); window.scrollTo({ top: 0 });
   };
 
@@ -413,6 +433,7 @@ export function GameApp() {
           <div><MetricBars metrics={metrics} /><Card className="mt-5 border-2 border-accent/40 bg-card py-0"><CardContent className="p-6"><div className="flex items-center gap-3"><Lightbulb className="size-7 text-accent-foreground" /><h2 className="text-2xl font-black text-primary">遇到提議時：停、想、做</h2></div><div className="mt-5 grid gap-3 sm:grid-cols-3">{[['1', '停', '停下來，數 1、2、3。'], ['2', '想', '想一想會有什麼後果。'], ['3', '做', '做出決定，並對後果負責。']].map(([number, title, text]) => <div key={number} className="rounded-2xl bg-muted p-4"><span className="grid size-8 place-items-center rounded-full bg-accent font-black text-accent-foreground">{number}</span><p className="mt-3 text-xl font-black">{title}</p><p className="mt-1 leading-6 text-muted-foreground">{text}</p></div>)}</div><p className="mt-5 text-center text-lg font-black text-accent-foreground">停一下，想後果，再決定；做了選擇，就要負責。</p></CardContent></Card></div>
         </section>
         <section className="mt-7"><h2 className="text-2xl font-black text-primary">三次選擇回顧</h2><div className="mt-4 grid gap-4 lg:grid-cols-3">{responses.map((response, index) => <Card key={`${response.scenarioId}-${index}`} className="py-0"><CardContent className="p-5"><Badge variant="outline">第 {index + 1} 輪</Badge><h3 className="mt-3 text-lg font-black">{response.scenarioTitle}</h3><p className="mt-2 text-sm font-bold leading-6">你的選擇：{response.choiceLabel}</p><div className="mt-4"><DeltaPills delta={response.delta} /></div></CardContent></Card>)}</div></section>
+        {syncStatus !== 'idle' && <output className={`mx-auto mt-6 block max-w-xl rounded-2xl border p-4 text-center font-bold ${syncStatus === 'synced' ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : syncStatus === 'failed' ? 'border-rose-300 bg-rose-50 text-rose-800' : 'border-border bg-muted text-muted-foreground'}`}>{syncStatus === 'synced' ? '✓ 紀錄已送到教師雲端後台' : syncStatus === 'failed' ? '紀錄尚未送到雲端，已保留在這個瀏覽器，請告訴老師。' : '正在把紀錄送到教師後台……'}</output>}
         <div className="my-8 flex flex-col gap-3 sm:flex-row sm:justify-center"><Button variant="outline" size="lg" onClick={() => setView('teacher')}><ClipboardList />查看教師端紀錄</Button><Button size="lg" onClick={() => { setStudentCode(''); setView('student-setup'); }}><RefreshCcw />再玩一次</Button></div>
       </div></main>
     );
