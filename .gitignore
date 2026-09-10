@@ -34,6 +34,7 @@ yarn-error.log*
 # deployment and generated files
 .vercel
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /dist_previous_locked/
 /dist_pre_static_export/

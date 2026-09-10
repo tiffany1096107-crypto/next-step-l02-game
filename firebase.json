@@ -1,10 +1,16 @@
 {
   "auth": {
     "providers": {
-      "anonymous": true
+      "anonymous": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "下一步，想清楚！教師專區",
+        "supportEmail": "tiffany1096107@gmail.com"
+      }
     }
   },
   "firestore": {
+    "database": "(default)",
+    "location": "asia-east1",
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },

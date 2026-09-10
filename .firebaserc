@@ -1,5 +1,7 @@
 {
   "projects": {
     "default": "next-step-l02-game-tw"
-  }
+  },
+  "targets": {},
+  "etags": {}
 }

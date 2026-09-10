@@ -1,23 +1,29 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowLeft, ArrowRight, BarChart3, BookOpenCheck, Building2, Camera, CameraOff,
   Check, ChevronRight, CircleDot, CircleStop, ClipboardList, CreditCard, DoorOpen,
   Eye, Flame, Gamepad2, GraduationCap, Hand, Lightbulb, LockKeyhole, MapPin,
   MessageCircle, MessageCircleWarning, Pause, RefreshCcw, Route, ScanLine, Send,
-  Share2, ShieldCheck, Smartphone, Sparkles, Target, Trophy, UserRoundX, Users,
+  Share2, ShieldCheck, Smartphone, Sparkles, Target, Trophy, UserCheck, UserPlus, UserRoundX, Users,
   Video, Volume2, Wifi, Zap,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Progress, ProgressIndicator, ProgressLabel, ProgressTrack, ProgressValue } from '@/components/ui/progress';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Choice, clamp, getResult, INITIAL_METRICS, METRIC_META, MetricKey, Metrics, SCENARIOS, Scenario, shuffle } from '@/lib/game-data';
-import { syncGameRecordToFirebase } from '@/lib/firebase-client';
+import {
+  batchReviewTeacherRequests, ensureAnonymousSession, getTeacherSession,
+  isFirebaseConfigured, loadCloudGameRecords, loadCloudSettings, loadTeacherRequests,
+  saveCloudSettings, signInTeacherWithGoogle, signOutTeacher, submitTeacherRequest,
+  syncGameRecordToFirebase, watchTeacherAuth, type TeacherRequest, type TeacherSession,
+} from '@/lib/firebase-client';
 
 type View = 'home' | 'student-setup' | 'game' | 'result' | 'teacher';
 type RoundResponse = {
@@ -134,6 +140,13 @@ export function GameApp() {
   const [metrics, setMetrics] = useState<Metrics>(INITIAL_METRICS);
   const [responses, setResponses] = useState<RoundResponse[]>([]);
   const [settingsMessage, setSettingsMessage] = useState('');
+  const [teacherSession, setTeacherSession] = useState<TeacherSession | null>(null);
+  const [authReady, setAuthReady] = useState(!isFirebaseConfigured);
+  const [authMessage, setAuthMessage] = useState('');
+  const [cloudRecords, setCloudRecords] = useState<GameRecord[]>([]);
+  const [teacherRequests, setTeacherRequests] = useState<TeacherRequest[]>([]);
+  const [selectedRequestIds, setSelectedRequestIds] = useState<string[]>([]);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
 
   useEffect(() => {
     try {
@@ -155,6 +168,36 @@ export function GameApp() {
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ enabledIds, requiredId })); } catch { /* preview only */ }
   }, [enabledIds, requiredId]);
+
+  useEffect(() => watchTeacherAuth((user) => {
+    if (!user) {
+      setTeacherSession(null);
+      void ensureAnonymousSession().finally(() => setAuthReady(true));
+      return;
+    }
+    void (async () => {
+      try {
+        const session = await getTeacherSession(user);
+        setTeacherSession(session);
+        const settings = await loadCloudSettings().catch(() => null);
+        if (settings?.enabledIds.length >= 3) {
+          setEnabledIds(settings.enabledIds);
+          setRequiredId(settings.requiredId);
+        }
+        if (session.status === 'admin' || session.status === 'teacher') {
+          setDashboardLoading(true);
+          const loadedRecords = await loadCloudGameRecords();
+          setCloudRecords(loadedRecords as GameRecord[]);
+          if (session.status === 'admin') setTeacherRequests(await loadTeacherRequests());
+        }
+      } catch {
+        setAuthMessage('目前無法讀取教師權限，請稍後再試。');
+      } finally {
+        setDashboardLoading(false);
+        setAuthReady(true);
+      }
+    })();
+  }), []);
 
   const startGame = (code = studentCode || '訪客') => {
     const pool = SCENARIOS.filter((scenario) => enabledIds.includes(scenario.id));
@@ -220,6 +263,67 @@ export function GameApp() {
   };
 
   const resetHome = () => { setView('home'); setSelected(null); setSettingsMessage(''); };
+  const teacherAuthorized = teacherSession?.status === 'admin' || teacherSession?.status === 'teacher';
+
+  const handleTeacherSignIn = async () => {
+    setAuthMessage('正在開啟 Google 登入……');
+    try {
+      const session = await signInTeacherWithGoogle();
+      setTeacherSession(session);
+      setAuthMessage('');
+    } catch {
+      setAuthMessage('登入沒有完成，請允許彈出視窗後再試一次。');
+    }
+  };
+
+  const handleTeacherRequest = async () => {
+    setAuthMessage('正在送出申請……');
+    try {
+      const session = await submitTeacherRequest();
+      setTeacherSession(session);
+      setAuthMessage('申請已送出，請等待管理員核准。');
+    } catch {
+      setAuthMessage('申請送出失敗，請稍後再試。');
+    }
+  };
+
+  const handleTeacherSignOut = async () => {
+    await signOutTeacher();
+    setTeacherSession(null);
+    setCloudRecords([]);
+    setTeacherRequests([]);
+    setSelectedRequestIds([]);
+    setAuthMessage('已登出教師帳號。');
+  };
+
+  const reviewRequests = async (decision: 'approved' | 'rejected') => {
+    if (!selectedRequestIds.length) return;
+    setAuthMessage(decision === 'approved' ? '正在批次核准……' : '正在批次拒絕……');
+    try {
+      await batchReviewTeacherRequests(selectedRequestIds, decision);
+      setTeacherRequests(await loadTeacherRequests());
+      setSelectedRequestIds([]);
+      setAuthMessage(decision === 'approved' ? '已完成批次核准。' : '已完成批次拒絕。');
+    } catch {
+      setAuthMessage('處理申請時發生問題，請稍後再試。');
+    }
+  };
+
+  const persistTeacherSettings = async (nextEnabledIds: string[], nextRequiredId: string, message: string) => {
+    setEnabledIds(nextEnabledIds);
+    setRequiredId(nextRequiredId);
+    if (!teacherAuthorized) {
+      setSettingsMessage(message);
+      return;
+    }
+    setSettingsMessage('正在同步設定……');
+    try {
+      await saveCloudSettings(nextEnabledIds, nextRequiredId);
+      setSettingsMessage(`${message} 已同步給所有瀏覽器。`);
+    } catch {
+      setSettingsMessage('雲端設定同步失敗，請稍後再試。');
+    }
+  };
   const scenario = rounds[roundIndex];
 
   if (view === 'home') return (
@@ -258,7 +362,7 @@ export function GameApp() {
       <div className="mx-auto max-w-3xl"><AppHeader onHome={resetHome} badge="學生挑戰" />
         <Card className="mt-10 border-2 border-primary/10 bg-card py-0 shadow-xl"><CardContent className="p-7 sm:p-10">
           <Badge className="bg-accent text-accent-foreground">開始之前</Badge><h1 className="mt-4 text-3xl font-black text-primary">準備好做三次選擇了嗎？</h1>
-          <p className="mt-3 text-base leading-7 text-muted-foreground">輸入座號或學生代碼。預覽版只會把紀錄保存在這個瀏覽器。</p>
+          <p className="mt-3 text-base leading-7 text-muted-foreground">輸入座號或學生代碼。完成後會安全送到教師的雲端紀錄，請不要輸入真實姓名。</p>
           <label className="mt-7 block text-base font-bold" htmlFor="studentCode">學生代碼</label>
           <Input id="studentCode" value={studentCode} onChange={(event) => setStudentCode(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') startGame(); }} placeholder="例如：701-07" className="mt-2 h-13 rounded-xl bg-white px-4 text-lg" maxLength={20} />
           <div className="mt-6 rounded-2xl bg-secondary/70 p-5"><p className="font-black text-secondary-foreground">記住三個動作</p><p className="mt-2 text-base leading-7 text-secondary-foreground/90">停下來數 1、2、3 → 想一想會有什麼後果 → 做出決定，並對後果負責。</p></div>
@@ -314,18 +418,49 @@ export function GameApp() {
     );
   }
 
-  const allRecords = [...records, ...DEMO_RECORDS];
+  if (view === 'teacher' && !teacherAuthorized) {
+    const hasGoogleAccount = Boolean(teacherSession?.email);
+    return (
+      <main className="min-h-screen bg-background px-5 py-6 sm:px-10 sm:py-8">
+        <div className="mx-auto max-w-2xl"><AppHeader onHome={resetHome} badge="教師登入" />
+          <Card className="mt-10 border-2 border-primary/10 bg-card py-0 shadow-xl"><CardContent className="p-7 sm:p-10">
+            <span className="grid size-14 place-items-center rounded-2xl bg-secondary text-secondary-foreground"><GraduationCap className="size-8" /></span>
+            <h1 className="mt-5 text-3xl font-black text-primary">教師專區</h1>
+            <p className="mt-3 text-base leading-7 text-muted-foreground">使用 Google 帳號登入。只有經管理員核准的教師，才能查看學生紀錄與調整情境。</p>
+            {!isFirebaseConfigured ? (
+              <p className="mt-6 rounded-2xl bg-muted p-5 font-bold">雲端服務尚未設定，請稍後再試。</p>
+            ) : !authReady ? (
+              <p className="mt-6 rounded-2xl bg-muted p-5 font-bold">正在確認登入狀態……</p>
+            ) : !hasGoogleAccount ? (
+              <Button size="lg" className="mt-7 h-13 w-full rounded-xl text-base" onClick={handleTeacherSignIn}><UserCheck />使用 Google 帳號登入</Button>
+            ) : teacherSession?.status === 'pending' ? (
+              <div className="mt-7 rounded-2xl border-2 border-accent/40 bg-accent/10 p-5"><p className="font-black text-accent-foreground">權限申請審核中</p><p className="mt-2 leading-7 text-muted-foreground">{teacherSession.email} 的申請已送出。管理員核准後，重新登入即可進入教師後台。</p><Button variant="outline" className="mt-4" onClick={handleTeacherSignIn}><RefreshCcw />重新確認權限</Button></div>
+            ) : (
+              <div className="mt-7 rounded-2xl border-2 border-primary/10 bg-muted p-5"><p className="font-black">目前登入帳號</p><p className="mt-1 break-all text-muted-foreground">{teacherSession?.email}</p><Button size="lg" className="mt-5 w-full" onClick={handleTeacherRequest}><UserPlus />申請教師權限</Button></div>
+            )}
+            {authMessage && <output className="mt-4 block rounded-xl bg-secondary/70 p-3 text-sm font-bold text-secondary-foreground">{authMessage}</output>}
+            <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between"><Button variant="ghost" onClick={resetHome}><ArrowLeft />返回首頁</Button>{hasGoogleAccount && <Button variant="outline" onClick={handleTeacherSignOut}>登出這個帳號</Button>}</div>
+          </CardContent></Card>
+        </div>
+      </main>
+    );
+  }
+
+  const allRecords = isFirebaseConfigured ? cloudRecords : [...records, ...DEMO_RECORDS];
   const averages = allRecords.length ? (Object.keys(INITIAL_METRICS) as MetricKey[]).reduce((acc, key) => ({ ...acc, [key]: Math.round(allRecords.reduce((sum, record) => sum + record.finalMetrics[key], 0) / allRecords.length) }), {} as Metrics) : INITIAL_METRICS;
+  const pendingRequests = teacherRequests.filter((request) => request.status === 'pending');
 
   return (
-    <main className="min-h-screen bg-[#f5f7fb] px-4 py-5 sm:px-8"><div className="mx-auto max-w-7xl"><AppHeader onHome={resetHome} badge="教師端｜本機預覽" />
-      <div className="mt-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-black text-primary">班級學習概況</h1><p className="mt-1 text-base text-muted-foreground">預覽版紀錄只存在這個瀏覽器；標示「示範」的資料可用來預覽版面。</p></div><Button onClick={() => setView('student-setup')}><Gamepad2 />切換到學生端</Button></div>
-      <Tabs defaultValue="overview" className="mt-6"><TabsList className="h-11 w-full justify-start overflow-x-auto rounded-xl bg-white p-1 sm:w-fit"><TabsTrigger value="overview" className="px-4"><BarChart3 />總覽</TabsTrigger><TabsTrigger value="records" className="px-4"><ClipboardList />遊戲紀錄</TabsTrigger><TabsTrigger value="scenarios" className="px-4"><Sparkles />指定情境</TabsTrigger></TabsList>
-        <TabsContent value="overview" className="mt-5"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><SummaryCard icon={Users} label="完成遊戲" value={`${allRecords.length} 次`} note={`${records.length} 筆實際預覽紀錄`} /><SummaryCard icon={ClipboardList} label="今日紀錄" value={`${allRecords.length} 次`} note="含 2 筆示範資料" /><SummaryCard icon={ShieldCheck} label="平均安全值" value={`${averages.safe}`} note="三項中可優先討論" /><SummaryCard icon={Sparkles} label="目前必出" value={requiredId || '未指定'} note={requiredId ? SCENARIOS.find((item) => item.id === requiredId)?.title ?? '' : '由啟用題庫隨機抽題'} /></div><Card className="mt-5 py-0"><CardHeader className="border-b p-6"><CardTitle className="text-xl font-black text-primary">班級選擇力平均</CardTitle></CardHeader><CardContent className="p-6"><MetricBars metrics={averages} /></CardContent></Card></TabsContent>
-        <TabsContent value="records" className="mt-5"><Card className="py-0"><CardHeader className="border-b p-5"><CardTitle className="text-xl font-black text-primary">每次遊戲紀錄</CardTitle></CardHeader><CardContent className="p-0"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="bg-muted text-sm text-muted-foreground"><tr><th className="p-4">學生代碼</th><th className="p-4">完成時間</th><th className="p-4">情境順序</th><th className="p-4">三思／安全／責任</th><th className="p-4">結果</th></tr></thead><tbody>{allRecords.map((record) => <tr key={record.id} className="border-t bg-white"><td className="p-4 font-bold">{record.studentCode}{record.id.startsWith('DEMO') && <Badge variant="outline" className="ml-2">示範</Badge>}</td><td className="p-4 text-sm text-muted-foreground">{new Date(record.completedAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td><td className="p-4"><div className="flex gap-1">{record.scenarioOrder.map((id) => <Badge key={id} variant="secondary">{id}</Badge>)}</div></td><td className="p-4 font-bold tabular-nums">{record.finalMetrics.think}／{record.finalMetrics.safe}／{record.finalMetrics.responsibility}</td><td className="p-4"><Badge>{record.resultTitle}</Badge></td></tr>)}</tbody></table></div>{allRecords.length === 0 && <p className="p-10 text-center text-muted-foreground">還沒有完成紀錄。</p>}</CardContent></Card></TabsContent>
-        <TabsContent value="scenarios" className="mt-5"><div className="grid gap-5 lg:grid-cols-[1fr_.72fr]"><Card className="py-0"><CardHeader className="border-b p-5"><CardTitle className="text-xl font-black text-primary">情境題庫</CardTitle></CardHeader><CardContent className="divide-y p-0">{SCENARIOS.map((item) => { const Icon = sceneIcons[item.icon]; const isEnabled = enabledIds.includes(item.id); return <div key={item.id} className="flex items-center gap-4 p-4"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-muted"><Icon className="size-5 text-primary" /></span><div className="min-w-0 flex-1"><p className="font-black">{item.id}｜{item.title}</p><p className="truncate text-sm text-muted-foreground">{item.focus}</p></div><Switch checked={isEnabled} onCheckedChange={(checked) => { if (!checked && enabledIds.length <= 3) { setSettingsMessage('至少要保留 3 個啟用情境。'); return; } const next = checked ? [...enabledIds, item.id] : enabledIds.filter((id) => id !== item.id); setEnabledIds(next); if (!checked && requiredId === item.id) setRequiredId(''); setSettingsMessage('設定已保存在本機預覽。'); }} aria-label={`${isEnabled ? '停用' : '啟用'}${item.title}`} /></div>; })}</CardContent></Card>
-          <Card className="h-fit border-2 border-primary/10 py-0"><CardContent className="p-6"><Badge className="bg-accent text-accent-foreground">教師指定</Badge><h2 className="mt-3 text-xl font-black text-primary">本次必出情境</h2><p className="mt-2 leading-6 text-muted-foreground">學生仍會回答三題；指定題保證出現，另外兩題隨機抽出，三題順序也會洗牌。</p><div className="mt-5 space-y-2"><button onClick={() => { setRequiredId(''); setSettingsMessage('已改回完全隨機。'); }} className={`flex w-full items-center justify-between rounded-xl border-2 p-3 text-left font-bold ${requiredId === '' ? 'border-primary bg-primary/5' : 'border-border bg-white'}`}>不指定，完全隨機{requiredId === '' && <Check className="size-5 text-primary" />}</button>{SCENARIOS.filter((item) => enabledIds.includes(item.id)).map((item) => <button key={item.id} onClick={() => { setRequiredId(item.id); setSettingsMessage(`已指定 ${item.id}｜${item.title}`); }} className={`flex w-full items-center justify-between rounded-xl border-2 p-3 text-left font-bold ${requiredId === item.id ? 'border-primary bg-primary/5' : 'border-border bg-white'}`}><span>{item.id}｜{item.title}</span>{requiredId === item.id && <Check className="size-5 text-primary" />}</button>)}</div>{settingsMessage && <p className="mt-4 rounded-xl bg-secondary/70 p-3 text-sm font-bold text-secondary-foreground" role="status">{settingsMessage}</p>}<Button className="mt-5 w-full" onClick={() => setView('student-setup')}>用這個設定開始預覽<ArrowRight /></Button><div className="mt-5 flex gap-2 rounded-xl bg-muted p-3 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 size-4 shrink-0" /><p>Firebase 安全規則與雲端送出介面已預留；正式啟用教師登入前，這裡仍只顯示目前裝置的紀錄。</p></div></CardContent></Card>
+    <main className="min-h-screen bg-[#f5f7fb] px-4 py-5 sm:px-8"><div className="mx-auto max-w-7xl"><AppHeader onHome={resetHome} badge={teacherSession?.status === 'admin' ? '教師端｜管理員' : '教師端'} />
+      <div className="mt-6 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-black text-primary">班級學習概況</h1><p className="mt-1 text-base text-muted-foreground">雲端紀錄會在已核准的教師帳號間同步。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={handleTeacherSignOut}>登出 {teacherSession?.displayName}</Button><Button onClick={() => setView('student-setup')}><Gamepad2 />切換到學生端</Button></div></div>
+      {authMessage && <output className="mt-4 block rounded-xl bg-secondary/70 p-3 text-sm font-bold text-secondary-foreground">{authMessage}</output>}
+      <Tabs defaultValue="overview" className="mt-6"><TabsList className="h-11 w-full justify-start overflow-x-auto rounded-xl bg-white p-1 sm:w-fit"><TabsTrigger value="overview" className="px-4"><BarChart3 />總覽</TabsTrigger><TabsTrigger value="records" className="px-4"><ClipboardList />遊戲紀錄</TabsTrigger><TabsTrigger value="scenarios" className="px-4"><Sparkles />指定情境</TabsTrigger>{teacherSession?.status === 'admin' && <TabsTrigger value="requests" className="px-4"><UserPlus />權限申請{pendingRequests.length > 0 && <Badge className="ml-1">{pendingRequests.length}</Badge>}</TabsTrigger>}</TabsList>
+        <TabsContent value="overview" className="mt-5">{dashboardLoading ? <Card><CardContent className="p-8 text-center font-bold text-muted-foreground">正在讀取雲端紀錄……</CardContent></Card> : <><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><SummaryCard icon={Users} label="完成遊戲" value={`${allRecords.length} 次`} note="跨瀏覽器雲端紀錄" /><SummaryCard icon={ClipboardList} label="可查看紀錄" value={`${allRecords.length} 筆`} note="最多顯示最近 500 筆" /><SummaryCard icon={ShieldCheck} label="平均安全值" value={`${averages.safe}`} note="三項中可優先討論" /><SummaryCard icon={Sparkles} label="目前必出" value={requiredId || '未指定'} note={requiredId ? SCENARIOS.find((item) => item.id === requiredId)?.title ?? '' : '由啟用題庫隨機抽題'} /></div><Card className="mt-5 py-0"><CardHeader className="border-b p-6"><CardTitle className="text-xl font-black text-primary">班級選擇力平均</CardTitle></CardHeader><CardContent className="p-6"><MetricBars metrics={averages} /></CardContent></Card></>}</TabsContent>
+        <TabsContent value="records" className="mt-5"><Card className="py-0"><CardHeader className="border-b p-5"><CardTitle className="text-xl font-black text-primary">每次遊戲紀錄</CardTitle></CardHeader><CardContent className="p-0"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="bg-muted text-sm text-muted-foreground"><tr><th className="p-4">學生代碼</th><th className="p-4">完成時間</th><th className="p-4">情境順序</th><th className="p-4">三思／安全／責任</th><th className="p-4">結果</th></tr></thead><tbody>{allRecords.map((record) => <tr key={record.id} className="border-t bg-white"><td className="p-4 font-bold">{record.studentCode}</td><td className="p-4 text-sm text-muted-foreground">{new Date(record.completedAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td><td className="p-4"><div className="flex gap-1">{record.scenarioOrder.map((id) => <Badge key={id} variant="secondary">{id}</Badge>)}</div></td><td className="p-4 font-bold tabular-nums">{record.finalMetrics.think}／{record.finalMetrics.safe}／{record.finalMetrics.responsibility}</td><td className="p-4"><Badge>{record.resultTitle}</Badge></td></tr>)}</tbody></table></div>{allRecords.length === 0 && <p className="p-10 text-center text-muted-foreground">還沒有學生完成遊戲。</p>}</CardContent></Card></TabsContent>
+        <TabsContent value="scenarios" className="mt-5"><div className="grid gap-5 lg:grid-cols-[1fr_.72fr]"><Card className="py-0"><CardHeader className="border-b p-5"><CardTitle className="text-xl font-black text-primary">情境題庫</CardTitle></CardHeader><CardContent className="divide-y p-0">{SCENARIOS.map((item) => { const Icon = sceneIcons[item.icon]; const isEnabled = enabledIds.includes(item.id); return <div key={item.id} className="flex items-center gap-4 p-4"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-muted"><Icon className="size-5 text-primary" /></span><div className="min-w-0 flex-1"><p className="font-black">{item.id}｜{item.title}</p><p className="truncate text-sm text-muted-foreground">{item.focus}</p></div><Switch checked={isEnabled} onCheckedChange={(checked) => { if (!checked && enabledIds.length <= 3) { setSettingsMessage('至少要保留 3 個啟用情境。'); return; } const next = checked ? [...enabledIds, item.id] : enabledIds.filter((id) => id !== item.id); const nextRequired = !checked && requiredId === item.id ? '' : requiredId; void persistTeacherSettings(next, nextRequired, checked ? `已啟用 ${item.id}。` : `已停用 ${item.id}。`); }} aria-label={`${isEnabled ? '停用' : '啟用'}${item.title}`} /></div>; })}</CardContent></Card>
+          <Card className="h-fit border-2 border-primary/10 py-0"><CardContent className="p-6"><Badge className="bg-accent text-accent-foreground">教師指定</Badge><h2 className="mt-3 text-xl font-black text-primary">本次必出情境</h2><p className="mt-2 leading-6 text-muted-foreground">指定題保證出現，另外兩題隨機抽出；所有學生瀏覽器會共用這項設定。</p><div className="mt-5 space-y-2"><button onClick={() => void persistTeacherSettings(enabledIds, '', '已改回完全隨機。')} className={`flex w-full items-center justify-between rounded-xl border-2 p-3 text-left font-bold ${requiredId === '' ? 'border-primary bg-primary/5' : 'border-border bg-white'}`}>不指定，完全隨機{requiredId === '' && <Check className="size-5 text-primary" />}</button>{SCENARIOS.filter((item) => enabledIds.includes(item.id)).map((item) => <button key={item.id} onClick={() => void persistTeacherSettings(enabledIds, item.id, `已指定 ${item.id}｜${item.title}。`)} className={`flex w-full items-center justify-between rounded-xl border-2 p-3 text-left font-bold ${requiredId === item.id ? 'border-primary bg-primary/5' : 'border-border bg-white'}`}><span>{item.id}｜{item.title}</span>{requiredId === item.id && <Check className="size-5 text-primary" />}</button>)}</div>{settingsMessage && <output className="mt-4 block rounded-xl bg-secondary/70 p-3 text-sm font-bold text-secondary-foreground">{settingsMessage}</output>}<Button className="mt-5 w-full" onClick={() => setView('student-setup')}>用這個設定開始預覽<ArrowRight /></Button><div className="mt-5 flex gap-2 rounded-xl bg-muted p-3 text-xs leading-5 text-muted-foreground"><LockKeyhole className="mt-0.5 size-4 shrink-0" /><p>只有已核准教師能調整設定；學生只能讀取題目設定與送出自己的結果。</p></div></CardContent></Card>
         </div></TabsContent>
+        {teacherSession?.status === 'admin' && <TabsContent value="requests" className="mt-5"><Card className="py-0"><CardHeader className="border-b p-5"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><CardTitle className="text-xl font-black text-primary">教師權限申請</CardTitle><p className="mt-1 text-sm text-muted-foreground">勾選多位教師後，可一次核准或拒絕。</p></div><div className="flex flex-wrap gap-2"><Button disabled={!selectedRequestIds.length} onClick={() => void reviewRequests('approved')}><UserCheck />批次核准</Button><Button variant="outline" disabled={!selectedRequestIds.length} onClick={() => void reviewRequests('rejected')}>批次拒絕</Button></div></div></CardHeader><CardContent className="p-0">{pendingRequests.length ? <><label htmlFor="select-all-requests" className="flex items-center gap-3 border-b bg-muted/60 p-4 font-bold"><Checkbox id="select-all-requests" checked={selectedRequestIds.length === pendingRequests.length} onCheckedChange={(checked) => setSelectedRequestIds(checked === true ? pendingRequests.map((item) => item.uid) : [])} />全選待審申請</label>{pendingRequests.map((request) => <label htmlFor={`request-${request.uid}`} key={request.uid} className="flex cursor-pointer items-center gap-4 border-b bg-white p-4 last:border-b-0"><Checkbox id={`request-${request.uid}`} checked={selectedRequestIds.includes(request.uid)} onCheckedChange={(checked) => setSelectedRequestIds((current) => checked === true ? [...new Set([...current, request.uid])] : current.filter((id) => id !== request.uid))} /><span className="grid size-11 shrink-0 place-items-center rounded-full bg-secondary font-black text-secondary-foreground">{request.displayName.slice(0, 1)}</span><span className="min-w-0"><strong className="block truncate">{request.displayName}</strong><small className="block truncate text-muted-foreground">{request.email}</small></span></label>)}</> : <div className="p-10 text-center"><UserCheck className="mx-auto size-10 text-secondary-foreground" /><p className="mt-3 font-black">目前沒有待審申請</p><p className="mt-1 text-sm text-muted-foreground">新申請送出後會顯示在這裡。</p></div>}</CardContent></Card></TabsContent>}
       </Tabs>
     </div></main>
   );
